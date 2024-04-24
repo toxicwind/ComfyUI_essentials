@@ -655,6 +655,97 @@ class MaskFromSegmentation:
 
         return (mask, )
 
+class MaskFromRGBCMYBW:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image": ("IMAGE", ),
+                "threshold_r": ("FLOAT", { "default": 0.15, "min": 0.0, "max": 1, "step": 0.01, }),
+                "threshold_g": ("FLOAT", { "default": 0.15, "min": 0.0, "max": 1, "step": 0.01, }),
+                "threshold_b": ("FLOAT", { "default": 0.15, "min": 0.0, "max": 1, "step": 0.01, }),
+                "remove_isolated_pixels": ("INT", { "default": 0, "min": 0, "max": 32, "step": 1, }),
+                "fill_holes": ("BOOLEAN", { "default": False }),
+            }
+        }
+
+    RETURN_TYPES = ("MASK","MASK","MASK","MASK","MASK","MASK","MASK","MASK",)
+    RETURN_NAMES = ("red","green","blue","cyan","magenta","yellow","black","white",)
+    FUNCTION = "execute"
+    CATEGORY = "essentials"
+
+    def execute(self, image, threshold_r, threshold_g, threshold_b, remove_isolated_pixels, fill_holes):
+        red = ((image[..., 0] >= 1-threshold_r) & (image[..., 1] < threshold_g) & (image[..., 2] < threshold_b)).float()
+        green = ((image[..., 0] < threshold_r) & (image[..., 1] >= 1-threshold_g) & (image[..., 2] < threshold_b)).float()
+        blue = ((image[..., 0] < threshold_r) & (image[..., 1] < threshold_g) & (image[..., 2] >= 1-threshold_b)).float()
+
+        cyan = ((image[..., 0] < threshold_r) & (image[..., 1] >= 1-threshold_g) & (image[..., 2] >= 1-threshold_b)).float()
+        magenta = ((image[..., 0] >= 1-threshold_r) & (image[..., 1] < threshold_g) & (image[..., 2] > 1-threshold_b)).float()
+        yellow = ((image[..., 0] >= 1-threshold_r) & (image[..., 1] >= 1-threshold_g) & (image[..., 2] < threshold_b)).float()
+
+        black = ((image[..., 0] <= threshold_r) & (image[..., 1] <= threshold_g) & (image[..., 2] <= threshold_b)).float()
+        white = ((image[..., 0] >= 1-threshold_r) & (image[..., 1] >= 1-threshold_g) & (image[..., 2] >= 1-threshold_b)).float()
+
+        if remove_isolated_pixels > 0 or fill_holes:
+            colors = [red, green, blue, cyan, magenta, yellow, black, white]
+            color_names = ['red', 'green', 'blue', 'cyan', 'magenta', 'yellow', 'black', 'white']
+            processed_colors = {}
+
+            for color_name, color in zip(color_names, colors):
+                color = color.cpu().numpy()
+                masks = []
+
+                for i in range(image.shape[0]):
+                    mask = color[i]
+                    if remove_isolated_pixels > 0:
+                        mask = scipy.ndimage.binary_opening(mask, structure=np.ones((remove_isolated_pixels, remove_isolated_pixels)))
+                    if fill_holes:
+                        mask = scipy.ndimage.binary_fill_holes(mask)
+                    mask = torch.from_numpy(mask)
+                    masks.append(mask)
+
+                processed_colors[color_name] = torch.stack(masks, dim=0).float()
+
+            red = processed_colors['red']
+            green = processed_colors['green']
+            blue = processed_colors['blue']
+            cyan = processed_colors['cyan']
+            magenta = processed_colors['magenta']
+            yellow = processed_colors['yellow']
+            black = processed_colors['black']
+            white = processed_colors['white']
+
+            del colors, processed_colors
+        
+        return (red, green, blue, cyan, magenta, yellow, black, white,)
+
+class MaskSmooth:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "mask": ("MASK",),
+                "amount": ("INT", { "default": 0, "min": 0, "max": 127, "step": 1, }),
+            }
+        }
+
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "execute"
+    CATEGORY = "essentials"
+
+    def execute(self, mask, amount):
+        if amount == 0:
+            return (mask,)
+        
+        if amount % 2 == 0:
+            amount += 1
+
+        mask = mask > 0.5
+        mask = T.functional.gaussian_blur(mask.unsqueeze(1), amount).squeeze(1).float()
+
+        return (mask,)
+
+
 class MaskFromBatch:
     @classmethod
     def INPUT_TYPES(s):
@@ -1206,7 +1297,7 @@ class KSamplerVariationsStochastic:
         work_latent["samples"] = work_latent["samples"][0].unsqueeze(0)
 
         stage1 = common_ksampler(model, noise_seed, steps, cfg, sampler, scheduler, positive, negative, work_latent, denoise=1.0, disable_noise=disable_noise, start_step=start_at_step, last_step=end_at_step, force_full_denoise=force_full_denoise)[0]
-        print(stage1)
+
         if batch_size > 1:
             stage1["samples"] = stage1["samples"].clone().repeat(batch_size, 1, 1, 1)
 
@@ -1561,7 +1652,7 @@ class PixelOEPixelize:
     CATEGORY = "essentials"
 
     def execute(self, image, downscale_mode, target_size, patch_size, thickness, color_matching, upscale):
-        from pixeloe import pixelize
+        from pixeloe.pixelize import pixelize
 
         image = image.clone().mul(255).clamp(0, 255).byte().cpu().numpy()
         output = []
@@ -1710,6 +1801,74 @@ class RemoveLatentMask:
 
         return (s,)
 
+class ConditioningCombineMultiple:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "conditioning_1": ("CONDITIONING",),
+                "conditioning_2": ("CONDITIONING",),
+            }, "optional": {
+                "conditioning_3": ("CONDITIONING",),
+                "conditioning_4": ("CONDITIONING",),
+                "conditioning_5": ("CONDITIONING",),
+            },
+        }
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "execute"
+    CATEGORY = "essentials"
+
+    def execute(self, conditioning_1, conditioning_2, conditioning_3=None, conditioning_4=None, conditioning_5=None):
+        c = conditioning_1 + conditioning_2
+
+        if conditioning_3 is not None:
+            c += conditioning_3
+        if conditioning_4 is not None:
+            c += conditioning_4
+        if conditioning_5 is not None:
+            c += conditioning_5
+        
+        return (c,)
+
+class ImageBatchMultiple:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "image_1": ("IMAGE",),
+                "image_2": ("IMAGE",),
+                "method": (["nearest-exact", "bilinear", "area", "bicubic", "lanczos"], { "default": "lanczos" }),
+            }, "optional": {
+                "image_3": ("IMAGE",),
+                "image_4": ("IMAGE",),
+                "image_5": ("IMAGE",),
+            },
+        }
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "execute"
+    CATEGORY = "essentials"
+
+    def execute(self, image_1, image_2, method, image_3=None, image_4=None, image_5=None):
+        if image_1.shape[1:] != image_2.shape[1:]:
+            image_2 = comfy.utils.common_upscale(image_2.movedim(-1,1), image_1.shape[2], image_1.shape[1], method, "center").movedim(1,-1)
+        out = torch.cat((image_1, image_2), dim=0)
+
+        if image_3 is not None:
+            if image_1.shape[1:] != image_3.shape[1:]:
+                image_3 = comfy.utils.common_upscale(image_3.movedim(-1,1), image_1.shape[2], image_1.shape[1], method, "center").movedim(1,-1)
+            out = torch.cat((out, image_3), dim=0)
+        if image_4 is not None:
+            if image_1.shape[1:] != image_4.shape[1:]:
+                image_4 = comfy.utils.common_upscale(image_4.movedim(-1,1), image_1.shape[2], image_1.shape[1], method, "center").movedim(1,-1)
+            out = torch.cat((out, image_4), dim=0)
+        if image_5 is not None:
+            if image_1.shape[1:] != image_5.shape[1:]:
+                image_5 = comfy.utils.common_upscale(image_5.movedim(-1,1), image_1.shape[2], image_1.shape[1], method, "center").movedim(1,-1)
+            out = torch.cat((out, image_5), dim=0)
+        
+        return (out,)
+
+
 NODE_CLASS_MAPPINGS = {
     "GetImageSize+": GetImageSize,
 
@@ -1740,6 +1899,8 @@ NODE_CLASS_MAPPINGS = {
     "MaskFromBatch+": MaskFromBatch,
     "MaskBoundingBox+": MaskBoundingBox,
     "MaskFromSegmentation+": MaskFromSegmentation,
+    "MaskFromRGBCMYBW+": MaskFromRGBCMYBW,
+    "MaskSmooth+": MaskSmooth,
 
     "SimpleMath+": SimpleMath,
     "ConsoleDebug+": ConsoleDebug,
@@ -1758,6 +1919,8 @@ NODE_CLASS_MAPPINGS = {
     "ImageRemoveBackground+": ImageRemoveBackground,
 
     "RemoveLatentMask+": RemoveLatentMask,
+    "ConditioningCombineMultiple+": ConditioningCombineMultiple,
+    "ImageBatchMultiple+": ImageBatchMultiple,
 
     #"NoiseFromImage~": NoiseFromImage,
 }
@@ -1791,6 +1954,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MaskFromBatch+": "🔧 Mask From Batch",
     "MaskBoundingBox+": "🔧 Mask Bounding Box",
     "MaskFromSegmentation+": "🔧 Mask From Segmentation",
+    "MaskFromRGBCMYBW+": "🔧 Mask From RGB/CMY/BW",
+    "MaskSmooth+": "🔧 Mask Smooth",
 
     "SimpleMath+": "🔧 Simple Math",
     "ConsoleDebug+": "🔧 Console Debug",
@@ -1809,6 +1974,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ImageRemoveBackground+": "🔧 Image Remove Background",
 
     "RemoveLatentMask+": "🔧 Remove Latent Mask",
+
+    "ConditioningCombineMultiple+": "🔧 Conditionings Combine Multiple ",
+    "ImageBatchMultiple+": "🔧 Images Batch Multiple",
 
     #"NoiseFromImage~": "🔧 Noise From Image",
 }
