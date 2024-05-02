@@ -418,6 +418,9 @@ class MaskBlur:
         size = int(6 * amount +1)
         if size % 2 == 0:
             size+= 1
+        
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(0)
 
         blurred = mask.unsqueeze(1)
         blurred = T.GaussianBlur(size, amount)(blurred)
@@ -540,6 +543,9 @@ class MaskBoundingBox:
     CATEGORY = "essentials"
 
     def execute(self, mask, padding, blur, image_optional=None):
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(0)
+
         if image_optional is None:
             image_optional = mask.unsqueeze(3).repeat(1, 1, 1, 3)
 
@@ -745,7 +751,6 @@ class MaskSmooth:
 
         return (mask,)
 
-
 class MaskFromBatch:
     @classmethod
     def INPUT_TYPES(s):
@@ -767,6 +772,31 @@ class MaskFromBatch:
         start = min(start, mask.shape[0]-1)
         length = min(mask.shape[0]-start, length)
         return (mask[start:start + length], )
+
+class MaskFromList:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "values": ("FLOAT", { "min": 0.0, "max": 1.0, "step": 0.01, }),
+                "width": ("INT", { "default": 32, "min": 1, "max": MAX_RESOLUTION, "step": 8, }),
+                "height": ("INT", { "default": 32, "min": 1, "max": MAX_RESOLUTION, "step": 8, }),
+            }
+        }
+
+    RETURN_TYPES = ("MASK",)
+    FUNCTION = "execute"
+    CATEGORY = "essentials"
+
+    def execute(self, values, width, height):
+        if not isinstance(values, list):
+            values = [values]
+
+        values = torch.tensor(values).float()
+        values = torch.clamp(values, 0.0, 1.0)
+        #values = (values - values.min()) / values.max()
+
+        return (values.unsqueeze(1).unsqueeze(2).repeat(1, width, height), )
 
 class ImageFromBatch:
     @classmethod
@@ -1234,7 +1264,7 @@ class CLIPTextEncodeSDXLSimplified:
             "width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
             "height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
             "size_cond_factor": ("INT", {"default": 4, "min": 1, "max": 16 }),
-            "text": ("STRING", {"multiline": True, "default": ""}),
+            "text": ("STRING", {"multiline": True, "dynamicPrompts": True, "default": ""}),
             "clip": ("CLIP", ),
             }}
     RETURN_TYPES = ("CONDITIONING",)
@@ -1515,7 +1545,7 @@ class DrawText:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "text": ("STRING", { "multiline": True, "default": "Hello, World!" }),
+                "text": ("STRING", { "multiline": True, "dynamicPrompts": True, "default": "Hello, World!" }),
                 "font": ([f for f in os.listdir(FONTS_DIR) if f.endswith('.ttf') or f.endswith('.otf')], ),
                 "size": ("INT", { "default": 56, "min": 1, "max": 9999, "step": 1 }),
                 "color": ("STRING", { "multiline": False, "default": "#FFFFFF" }),
@@ -1901,6 +1931,7 @@ NODE_CLASS_MAPPINGS = {
     "MaskFromSegmentation+": MaskFromSegmentation,
     "MaskFromRGBCMYBW+": MaskFromRGBCMYBW,
     "MaskSmooth+": MaskSmooth,
+    "MaskFromList+": MaskFromList,
 
     "SimpleMath+": SimpleMath,
     "ConsoleDebug+": ConsoleDebug,
@@ -1956,6 +1987,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MaskFromSegmentation+": "🔧 Mask From Segmentation",
     "MaskFromRGBCMYBW+": "🔧 Mask From RGB/CMY/BW",
     "MaskSmooth+": "🔧 Mask Smooth",
+    "MaskFromList+": "🔧 Mask From List",
 
     "SimpleMath+": "🔧 Simple Math",
     "ConsoleDebug+": "🔧 Console Debug",
