@@ -22,6 +22,7 @@
 /fonts/*.otf
 /fonts/*.ttf
 /input/
+/luts/*.CUBE
 /luts/*.cube
 /models/
 /output/
@@ -30,6 +31,9 @@
 /user/
 /web/extensions/*
 /workflows*/*.json
+<<<<<<< HEAD
+=======
+>>>>>>> upstream/main
 __pycache__/
 custom_nodes/
 extra_model_paths.yaml
